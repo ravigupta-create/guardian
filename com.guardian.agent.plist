@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.guardian.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/saavangupta/guardian/guardian.py</string>
+    </array>
+
+    <!-- Run every 3 hours (10800 seconds) -->
+    <key>StartInterval</key>
+    <integer>10800</integer>
+
+    <!-- Also run on login -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Low priority — won't slow down your Mac -->
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <!-- Redirect stdout/stderr to log -->
+    <key>StandardOutPath</key>
+    <string>/Users/saavangupta/.guardian/guardian-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/saavangupta/.guardian/guardian-stderr.log</string>
+
+    <!-- Don't restart on non-zero exit (warnings/critical are non-zero) -->
+    <key>SuccessfulExitCodes</key>
+    <array>
+        <integer>0</integer>
+        <integer>1</integer>
+        <integer>2</integer>
+    </array>
+</dict>
+</plist>
