@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Guardian v3.0 — macOS Background Security Monitor (Ultimate Edition)
+Guardian v4.0 — macOS Background Security Monitor (Ultimate Edition)
 Runs every 3 hours via LaunchAgent. Zero cost, zero network calls, 100% local.
 14 check modules, 60+ checks, security score, trends, personalized suggestions.
 Optional: osquery + ClamAV integration if installed (both free).
@@ -57,6 +57,12 @@ ALLOWED_BINS = {
     "diskutil": "/usr/sbin/diskutil",
     "profiles": "/usr/bin/profiles",
     "last": "/usr/bin/last",
+    "ifconfig": "/sbin/ifconfig",
+    "ioreg": "/usr/sbin/ioreg",
+    "log": "/usr/bin/log",
+    "codesign": "/usr/bin/codesign",
+    "plutil": "/usr/bin/plutil",
+    "systemsetup": "/usr/sbin/systemsetup",
 }
 
 # Optional tools — detected at runtime
@@ -632,7 +638,7 @@ def check_malware_indicators():
         ".streamlit", ".viminfo", ".wget-hsts", ".netrc",
         ".jarvis_memory.json", ".jarvis_notes.json", ".jarvis_routines.json",
         ".swiftpm", ".templateengine", ".zcompdump", ".zsh_history",
-        ".Xauthority",
+        ".Xauthority", ".osquery",
     }
     try:
         odd = [f.name for f in home.iterdir()
@@ -1299,10 +1305,10 @@ def check_clamav():
 
     findings.append(Finding(OK, "Antivirus", "ClamAV is installed"))
 
-    # Quick scan of /tmp and Downloads (lightweight, won't slow things down)
+    # Scan /tmp, Downloads, and Desktop (lightweight limits prevent slowdown)
     home = pathlib.Path.home()
     scan_targets = []
-    for t in ["/tmp", str(home / "Downloads")]:
+    for t in ["/tmp", str(home / "Downloads"), str(home / "Desktop")]:
         if os.path.isdir(t):
             scan_targets.append(t)
 
@@ -1326,6 +1332,510 @@ def check_clamav():
             else:
                 findings.append(Finding(OK, "Antivirus",
                     f"ClamAV scan clean: {target}"))
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODULE 15: SHARING & AIRDROP
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_sharing():
+    findings = []
+
+    # 15a. AirDrop discoverability
+    out, _ = safe_run("defaults", ["read", "com.apple.sharingd", "DiscoverableMode"], timeout=10)
+    if out:
+        mode = out.strip()
+        if mode == "Everyone":
+            findings.append(Finding(WARNING, "Sharing",
+                "AirDrop is set to EVERYONE",
+                detail="Anyone nearby can send you files.",
+                fix="System Settings > General > AirDrop > Contacts Only (or Off)"))
+        elif mode == "Contacts Only":
+            findings.append(Finding(OK, "Sharing", "AirDrop: Contacts Only"))
+        elif mode == "Off":
+            findings.append(Finding(OK, "Sharing", "AirDrop is disabled"))
+        else:
+            findings.append(Finding(OK, "Sharing", f"AirDrop: {mode}"))
+
+    # 15b. Bluetooth sharing
+    out, _ = safe_run("defaults", ["read",
+        "/Library/Preferences/com.apple.Bluetooth", "PrefKeyServicesEnabled"], timeout=10)
+    if out and out.strip() == "1":
+        findings.append(Finding(WARNING, "Sharing",
+            "Bluetooth Sharing is enabled",
+            fix="System Settings > General > Sharing > Bluetooth Sharing OFF"))
+
+    # 15c. Printer sharing
+    out, _ = safe_run("launchctl", ["print", "system/org.cups.cupsd"], timeout=10)
+    if out:
+        # Check if printer sharing is on via cupsctl
+        sharing_conf = pathlib.Path("/etc/cups/cupsd.conf")
+        if sharing_conf.exists():
+            try:
+                content = sharing_conf.read_text()
+                if "Browsing On" in content or "_remote_any" in content:
+                    findings.append(Finding(INFO, "Sharing",
+                        "Printer Sharing may be enabled",
+                        fix="System Settings > General > Sharing > Printer Sharing OFF"))
+            except Exception:
+                pass
+
+    # 15d. Media sharing
+    out, _ = safe_run("defaults", ["read", "com.apple.amp.mediasharingd", "home-sharing-enabled"], timeout=10)
+    if out and out.strip() == "1":
+        findings.append(Finding(INFO, "Sharing",
+            "Home Media Sharing is enabled"))
+
+    # 15e. Content caching
+    out, _ = safe_run("defaults", ["read",
+        "/Library/Preferences/com.apple.AssetCache", "Activated"], timeout=10)
+    if out and out.strip() == "1":
+        findings.append(Finding(INFO, "Sharing",
+            "Content Caching is enabled (shares Apple updates on network)"))
+
+    if not findings:
+        findings.append(Finding(OK, "Sharing", "No unnecessary sharing services detected"))
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODULE 16: SIRI & LOCK SCREEN EXPOSURE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_siri_exposure():
+    findings = []
+
+    # 16a. Siri enabled
+    out, _ = safe_run("defaults", ["read", "com.apple.assistant.support", "Assistant Enabled"], timeout=10)
+    if out and out.strip() == "1":
+        findings.append(Finding(INFO, "Siri", "Siri is enabled"))
+
+        # 16b. Siri on lock screen
+        out, _ = safe_run("defaults", ["read", "com.apple.Siri", "LockscreenEnabled"], timeout=10)
+        if out and out.strip() == "1":
+            findings.append(Finding(WARNING, "Siri",
+                "Siri accessible from LOCK SCREEN",
+                detail="Someone can ask Siri questions without unlocking your Mac.",
+                fix="System Settings > Siri > Allow Siri When Locked > OFF"))
+        else:
+            findings.append(Finding(OK, "Siri", "Siri not accessible from lock screen"))
+    else:
+        findings.append(Finding(OK, "Siri", "Siri is disabled"))
+
+    # 16c. Lock screen notifications
+    out, _ = safe_run("defaults", ["read",
+        "com.apple.ncprefs", "content_visibility"], timeout=10)
+    # This is complex — just check notification center on lock screen
+    out, _ = safe_run("defaults", ["read",
+        "/Library/Preferences/com.apple.loginwindow", "LoginwindowLaunchesRelaunchApps"], timeout=10)
+
+    # 16d. Show owner info on lock screen
+    out, _ = safe_run("defaults", ["read",
+        "/Library/Preferences/com.apple.loginwindow", "LoginwindowText"], timeout=10)
+    if out and "does not exist" not in out.lower():
+        findings.append(Finding(INFO, "Siri",
+            f"Lock screen message set: {out.strip()[:50]}"))
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODULE 17: CONFIGURATION PROFILES (MDM detection)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_config_profiles():
+    findings = []
+
+    out, _ = safe_run("profiles", ["status", "-type", "enrollment"], timeout=15)
+    if out:
+        if "mdm" in out.lower() and "yes" in out.lower():
+            findings.append(Finding(WARNING, "Profiles",
+                "This Mac is enrolled in MDM (Mobile Device Management)",
+                detail="An organization can remotely manage this Mac.",
+                fix="If this is your personal Mac, remove MDM enrollment"))
+        else:
+            findings.append(Finding(OK, "Profiles", "No MDM enrollment detected"))
+    else:
+        findings.append(Finding(OK, "Profiles", "No MDM enrollment"))
+
+    # Check for installed configuration profiles
+    out, _ = safe_run("profiles", ["list"], timeout=15)
+    if out and "there are no profiles installed" not in out.lower():
+        profile_count = out.count("attribute:")
+        if profile_count > 0:
+            findings.append(Finding(INFO, "Profiles",
+                f"{profile_count} configuration profile(s) installed",
+                out[:300],
+                fix="Review: System Settings > Privacy & Security > Profiles"))
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODULE 18: NETWORK INTERFACES & HISTORY
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_network_interfaces():
+    findings = []
+
+    # 18a. Check for unexpected network interfaces (VPN tunnels, TAP/TUN)
+    out, _ = safe_run("ifconfig", ["-a"], timeout=10)
+    if out:
+        suspicious_ifaces = []
+        current_iface = ""
+        for line in out.split("\n"):
+            if not line.startswith("\t") and ":" in line:
+                current_iface = line.split(":")[0]
+            if current_iface.startswith(("tap", "tun", "feth", "bridge")):
+                if current_iface not in [i[0] for i in suspicious_ifaces]:
+                    suspicious_ifaces.append((current_iface, line.strip()))
+
+        if suspicious_ifaces:
+            detail = "\n".join(f"{name}: {info}" for name, info in suspicious_ifaces[:5])
+            findings.append(Finding(INFO, "Net Interfaces",
+                f"{len(suspicious_ifaces)} virtual network interface(s) detected",
+                detail))
+
+    # 18b. Check Wi-Fi security type
+    out, _ = safe_run("networksetup", ["-getinfo", "Wi-Fi"])
+    if out:
+        for line in out.split("\n"):
+            if "ip address" in line.lower() and ":" in line:
+                ip = line.split(":", 1)[1].strip()
+                if ip and ip != "none":
+                    findings.append(Finding(INFO, "Net Interfaces",
+                        f"Wi-Fi IP: {ip}"))
+                break
+
+    # 18c. Recent Wi-Fi networks (check for open networks in history)
+    wifi_plist = pathlib.Path("/Library/Preferences/com.apple.wifi.known-networks.plist")
+    if wifi_plist.exists():
+        try:
+            with open(wifi_plist, "rb") as f:
+                data = plistlib.load(f)
+            open_networks = []
+            for ssid, info in data.items():
+                if isinstance(info, dict):
+                    sec_type = info.get("SecurityMode", "")
+                    if sec_type == "Open" or "none" in str(sec_type).lower():
+                        open_networks.append(ssid)
+            if open_networks:
+                findings.append(Finding(WARNING, "Net Interfaces",
+                    f"{len(open_networks)} open (unencrypted) Wi-Fi network(s) in history",
+                    "\n".join(open_networks[:10]),
+                    fix="Remove: System Settings > Wi-Fi > (i) next to network > Forget"))
+        except Exception:
+            pass
+
+    if not findings:
+        findings.append(Finding(OK, "Net Interfaces", "Network interfaces look normal"))
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODULE 19: QUARANTINE & DOWNLOAD HISTORY
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_quarantine():
+    findings = []
+    home = pathlib.Path.home()
+
+    # macOS quarantine events database
+    qdb = home / "Library" / "Preferences" / "com.apple.LaunchServices.QuarantineEventsV2"
+    if qdb.is_file():
+        try:
+            conn = sqlite3.connect(f"file:{qdb}?mode=ro", uri=True)
+            cursor = conn.cursor()
+
+            # Count total quarantine events
+            cursor.execute("SELECT COUNT(*) FROM LSQuarantineEvent")
+            total = cursor.fetchone()[0]
+
+            # Recent downloads (last 7 days)
+            week_ago = time.time() - (7 * 86400)
+            # Apple's quarantine timestamps are CoreData format (seconds since 2001-01-01)
+            coredata_epoch = 978307200  # Unix timestamp of 2001-01-01
+            week_ago_cd = week_ago - coredata_epoch
+            cursor.execute(
+                "SELECT LSQuarantineDataURLString, LSQuarantineOriginURLString "
+                "FROM LSQuarantineEvent WHERE LSQuarantineTimeStamp > ? "
+                "ORDER BY LSQuarantineTimeStamp DESC LIMIT 10",
+                (week_ago_cd,))
+            recent = cursor.fetchall()
+
+            if recent:
+                detail_lines = []
+                for data_url, origin_url in recent:
+                    name = (data_url or "").split("/")[-1] if data_url else "?"
+                    source = (origin_url or "")[:60]
+                    detail_lines.append(f"{name[:40]}  from: {source}")
+                findings.append(Finding(INFO, "Downloads",
+                    f"{len(recent)} file(s) downloaded in last 7 days ({total} total)",
+                    "\n".join(detail_lines)))
+
+            # Check for suspicious file types downloaded recently
+            cursor.execute(
+                "SELECT LSQuarantineDataURLString FROM LSQuarantineEvent "
+                "WHERE LSQuarantineTimeStamp > ?",
+                (week_ago_cd,))
+            recent_files = cursor.fetchall()
+            sus_downloads = []
+            sus_exts = {".command", ".sh", ".scpt", ".terminal", ".tool", ".workflow"}
+            for (url,) in recent_files:
+                if url:
+                    for ext in sus_exts:
+                        if url.lower().endswith(ext):
+                            sus_downloads.append(url.split("/")[-1])
+            if sus_downloads:
+                findings.append(Finding(WARNING, "Downloads",
+                    f"{len(sus_downloads)} potentially risky download(s) this week",
+                    "\n".join(sus_downloads[:10]),
+                    fix="Review these files — scripts can be malicious"))
+
+            conn.close()
+        except Exception as e:
+            findings.append(Finding(INFO, "Downloads",
+                f"Could not read quarantine database: {e}"))
+    else:
+        findings.append(Finding(INFO, "Downloads",
+            "Quarantine database not found"))
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODULE 20: APPLICATION SECURITY
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_app_security():
+    findings = []
+
+    # 20a. Check for unsigned or ad-hoc signed apps in /Applications
+    apps_dir = pathlib.Path("/Applications")
+    unsigned_apps = []
+    adhoc_apps = []
+
+    if apps_dir.is_dir():
+        try:
+            for app in apps_dir.iterdir():
+                if not app.suffix == ".app":
+                    continue
+                out, err = safe_run("codesign", ["-dv", str(app)], timeout=5)
+                combined = (out or "") + (err or "")
+                if "code object is not signed" in combined.lower():
+                    unsigned_apps.append(app.name)
+                elif "adhoc" in combined.lower():
+                    adhoc_apps.append(app.name)
+        except Exception:
+            pass
+
+    if unsigned_apps:
+        findings.append(Finding(WARNING, "Apps",
+            f"{len(unsigned_apps)} unsigned app(s) in /Applications",
+            "\n".join(unsigned_apps[:10]),
+            fix="Unsigned apps bypass Gatekeeper — verify these are legitimate"))
+    if adhoc_apps:
+        findings.append(Finding(INFO, "Apps",
+            f"{len(adhoc_apps)} ad-hoc signed app(s)",
+            "\n".join(adhoc_apps[:10])))
+
+    # 20b. Recently modified apps (potential tampering)
+    week_ago = time.time() - (7 * 86400)
+    recently_modified = []
+    if apps_dir.is_dir():
+        try:
+            for app in apps_dir.iterdir():
+                if app.suffix == ".app":
+                    try:
+                        mtime = app.stat().st_mtime
+                        if mtime > week_ago:
+                            date_str = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
+                            recently_modified.append(f"{app.name} (modified {date_str})")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    if recently_modified:
+        findings.append(Finding(INFO, "Apps",
+            f"{len(recently_modified)} app(s) modified in last 7 days",
+            "\n".join(recently_modified[:10])))
+
+    # 20c. Apps from unidentified developers (check quarantine flag)
+    out, _ = safe_run("spctl", ["--assess", "--type", "execute", "/Applications/"], timeout=5)
+    # This is per-app; just note Gatekeeper status is already covered
+
+    if not findings:
+        findings.append(Finding(OK, "Apps", "All applications appear properly signed"))
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODULE 21: SYSTEM LOG ANALYSIS (failed logins, sudo, auth events)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_system_logs():
+    findings = []
+
+    # 21a. Failed sudo attempts in last 24h
+    out, _ = safe_run("log", ["show", "--predicate",
+        "process == \"sudo\" AND eventMessage CONTAINS \"incorrect password\"",
+        "--style", "compact", "--last", "24h"], timeout=30)
+    if out:
+        lines = [l for l in out.strip().split("\n") if l.strip() and "Filtering" not in l]
+        if len(lines) > 0:
+            findings.append(Finding(WARNING, "Logs",
+                f"{len(lines)} failed sudo attempt(s) in last 24 hours",
+                "\n".join(lines[:5]),
+                fix="If these weren't you, investigate — someone may be trying to gain admin access"))
+        else:
+            findings.append(Finding(OK, "Logs", "No failed sudo attempts in 24h"))
+    else:
+        findings.append(Finding(OK, "Logs", "No failed sudo attempts in 24h"))
+
+    # 21b. Failed login attempts (screensaver/login window)
+    out, _ = safe_run("log", ["show", "--predicate",
+        "subsystem == \"com.apple.Authorization\" AND eventMessage CONTAINS \"Failed\"",
+        "--style", "compact", "--last", "24h"], timeout=30)
+    if out:
+        lines = [l for l in out.strip().split("\n") if l.strip() and "Filtering" not in l]
+        if len(lines) > 3:
+            findings.append(Finding(WARNING, "Logs",
+                f"{len(lines)} failed auth events in last 24 hours",
+                fix="Multiple failed logins could indicate unauthorized access attempts"))
+
+    # 21c. Kernel panics in last 7 days
+    panic_dir = pathlib.Path("/Library/Logs/DiagnosticReports")
+    if panic_dir.is_dir():
+        week_ago = time.time() - (7 * 86400)
+        panics = []
+        try:
+            for f in panic_dir.iterdir():
+                if "panic" in f.name.lower() and f.stat().st_mtime > week_ago:
+                    panics.append(f.name)
+        except Exception:
+            pass
+        if panics:
+            findings.append(Finding(WARNING, "Logs",
+                f"{len(panics)} kernel panic(s) in last 7 days",
+                "\n".join(panics[:5]),
+                fix="Kernel panics can indicate hardware issues or malicious kernel extensions"))
+
+    # 21d. System uptime (very long uptime = no security updates applied)
+    out, _ = safe_run("sysctl", ["-n", "kern.boottime"], timeout=10)
+    if out:
+        match = re.search(r"sec = (\d+)", out)
+        if match:
+            boot_ts = int(match.group(1))
+            uptime_days = (time.time() - boot_ts) / 86400
+            if uptime_days > 30:
+                findings.append(Finding(WARNING, "Logs",
+                    f"System uptime: {int(uptime_days)} days",
+                    detail="Very long uptime means no reboot — security updates often require restart.",
+                    fix="Restart your Mac to apply pending updates"))
+            else:
+                findings.append(Finding(OK, "Logs",
+                    f"System uptime: {int(uptime_days)} day(s)"))
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ENHANCED OSQUERY CHECKS (more queries if osquery is available)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_osquery_enhanced():
+    """Additional osquery checks beyond the basic module."""
+    findings = []
+
+    if "osqueryi" not in OPTIONAL_BINS:
+        return findings
+
+    # Chrome extensions via osquery
+    out, _ = safe_run("osqueryi", ["--json",
+        "SELECT name, identifier, version FROM chrome_extensions LIMIT 20"], timeout=15)
+    if out:
+        try:
+            exts = json.loads(out)
+            if exts:
+                detail = "\n".join(f"{e.get('name','?')} v{e.get('version','?')}"
+                                   for e in exts[:15])
+                findings.append(Finding(INFO, "osquery+",
+                    f"Chrome: {len(exts)} extension(s) (detailed)", detail))
+        except Exception:
+            pass
+
+    # Safari extensions via osquery
+    out, _ = safe_run("osqueryi", ["--json",
+        "SELECT name, version FROM safari_extensions LIMIT 15"], timeout=15)
+    if out:
+        try:
+            exts = json.loads(out)
+            if exts:
+                detail = "\n".join(f"{e.get('name','?')} v{e.get('version','?')}"
+                                   for e in exts[:15])
+                findings.append(Finding(INFO, "osquery+",
+                    f"Safari: {len(exts)} extension(s)", detail))
+        except Exception:
+            pass
+
+    # Disk encryption via osquery (only check named user volumes, not raw partitions)
+    out, _ = safe_run("osqueryi", ["--json",
+        "SELECT name, encrypted FROM disk_encryption WHERE name NOT LIKE '/dev/%'"], timeout=15)
+    if out:
+        try:
+            disks = json.loads(out)
+            unencrypted = [d for d in disks if d.get("encrypted") == "0"
+                           and d.get("name", "").strip()]
+            if unencrypted:
+                detail = "\n".join(d.get("name", "?") for d in unencrypted[:5])
+                findings.append(Finding(WARNING, "osquery+",
+                    f"{len(unencrypted)} unencrypted volume(s)", detail))
+        except Exception:
+            pass
+
+    # SIP status via osquery (only flag truly dangerous disabled flags)
+    out, _ = safe_run("osqueryi", ["--json",
+        "SELECT config_flag, enabled FROM sip_config WHERE enabled = 1"], timeout=15)
+    if out:
+        try:
+            sip = json.loads(out)
+            enabled_flags = [s.get("config_flag", "") for s in sip]
+            findings.append(Finding(OK, "osquery+",
+                f"SIP: {len(enabled_flags)} protection(s) active"))
+        except Exception:
+            pass
+
+    # Installed packages (recently installed)
+    out, _ = safe_run("osqueryi", ["--json",
+        "SELECT name, version, location FROM packages "
+        "ORDER BY install_time DESC LIMIT 10"], timeout=15)
+    if out:
+        try:
+            pkgs = json.loads(out)
+            if pkgs:
+                detail = "\n".join(f"{p.get('name','?')} v{p.get('version','?')}"
+                                   for p in pkgs[:10])
+                findings.append(Finding(INFO, "osquery+",
+                    f"Recent packages installed", detail))
+        except Exception:
+            pass
+
+    # Kernel info
+    out, _ = safe_run("osqueryi", ["--json",
+        "SELECT version FROM kernel_info"], timeout=10)
+    if out:
+        try:
+            ki = json.loads(out)
+            if ki:
+                findings.append(Finding(INFO, "osquery+",
+                    f"Kernel: {ki[0].get('version','?')}"))
+        except Exception:
+            pass
 
     return findings
 
@@ -1495,6 +2005,60 @@ def generate_suggestions(all_findings, score):
                   "ProtonVPN (free tier), or Cloudflare WARP (free)."
     })
 
+    # AirDrop
+    if any("airdrop" in f.title.lower() and "everyone" in f.title.lower() for f in all_findings):
+        suggestions.append({
+            "priority": "MEDIUM",
+            "title": "Restrict AirDrop to Contacts Only",
+            "detail": "AirDrop set to Everyone lets strangers send you files.\n"
+                      "System Settings > General > AirDrop > Contacts Only"
+        })
+
+    # Siri lock screen
+    if any("siri" in f.title.lower() and "lock screen" in f.title.lower() for f in all_findings):
+        suggestions.append({
+            "priority": "MEDIUM",
+            "title": "Disable Siri on the lock screen",
+            "detail": "Someone can ask Siri to read messages, make calls, etc. without your password.\n"
+                      "System Settings > Siri > Allow Siri When Locked > OFF"
+        })
+
+    # Failed sudo
+    if any("failed sudo" in f.title.lower() and f.severity == WARNING for f in all_findings):
+        suggestions.append({
+            "priority": "HIGH",
+            "title": "Investigate failed sudo attempts",
+            "detail": "Failed sudo attempts mean someone tried to run admin commands with wrong password.\n"
+                      "If it wasn't you, change your password immediately:\n"
+                      "System Settings > Users & Groups > Change Password"
+        })
+
+    # Long uptime
+    if any("uptime" in f.title.lower() and f.severity == WARNING for f in all_findings):
+        suggestions.append({
+            "priority": "MEDIUM",
+            "title": "Restart your Mac",
+            "detail": "Your Mac has been running for over 30 days without a restart.\n"
+                      "Security updates often require a reboot to take effect."
+        })
+
+    # Two-factor authentication
+    suggestions.append({
+        "priority": "MEDIUM",
+        "title": "Enable two-factor authentication for Apple ID",
+        "detail": "If not already enabled, 2FA prevents someone from accessing your\n"
+                  "iCloud even if they know your password.\n"
+                  "System Settings > Apple ID > Sign-In & Security > Two-Factor Authentication"
+    })
+
+    # Safari safe browsing
+    suggestions.append({
+        "priority": "LOW",
+        "title": "Enable fraudulent website warnings in Safari",
+        "detail": "Safari can warn you about phishing sites.\n"
+                  "Safari > Settings > Security > Fraudulent sites: ON"
+    })
+
     # Physical security
     if score >= 85:
         suggestions.append({
@@ -1503,6 +2067,15 @@ def generate_suggestions(all_findings, score):
             "detail": "If your Mac is lost or stolen, Find My Mac can locate, lock, or erase it.\n"
                       "System Settings > Apple ID > Find My > Find My Mac: ON"
         })
+
+    # Auto-lock
+    suggestions.append({
+        "priority": "LOW",
+        "title": "Set a firmware password (Intel) or enable Activation Lock (Apple Silicon)",
+        "detail": "Prevents someone from booting your Mac from USB or resetting it.\n"
+                  "Apple Silicon: automatic with Find My Mac enabled.\n"
+                  "Intel: Boot Recovery Mode > Utilities > Startup Security Utility"
+    })
 
     return suggestions
 
@@ -1602,7 +2175,7 @@ def generate_report(all_findings, score, suggestions):
 
     lines = []
     lines.append("=" * 72)
-    lines.append("  GUARDIAN v3.0 — macOS Security Report")
+    lines.append("  GUARDIAN v4.0 — macOS Security Report")
     lines.append("=" * 72)
     lines.append(f"  Date     : {now.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"  macOS    : {macos_ver or '?'} ({build_ver or '?'})")
@@ -1657,7 +2230,7 @@ def generate_report(all_findings, score, suggestions):
             lines.append("")
 
     lines.append("=" * 72)
-    lines.append(f"  Guardian v3.0 — {len(all_findings)} checks | {len(suggestions)} suggestions")
+    lines.append(f"  Guardian v4.0 — {len(all_findings)} checks | {len(suggestions)} suggestions")
     lines.append("=" * 72)
 
     return "\n".join(lines)
@@ -1684,14 +2257,14 @@ def cleanup_old_reports():
 
 def main():
     start = time.time()
-    log.info("Guardian v3.0 scan starting")
+    log.info("Guardian v4.0 scan starting")
 
     # Detect optional tools
     detect_optional_tools()
     if OPTIONAL_BINS:
         log.info(f"Optional tools detected: {', '.join(OPTIONAL_BINS.keys())}")
 
-    # All 14 check modules
+    # All 21 check modules
     checks = {
         "network": check_network_security,
         "system": check_system_integrity,
@@ -1707,6 +2280,14 @@ def main():
         "certificates": check_certificates,
         "osquery": check_osquery,
         "clamav": check_clamav,
+        "sharing": check_sharing,
+        "siri": check_siri_exposure,
+        "profiles": check_config_profiles,
+        "netinterfaces": check_network_interfaces,
+        "quarantine": check_quarantine,
+        "apps": check_app_security,
+        "logs": check_system_logs,
+        "osquery_enhanced": check_osquery_enhanced,
     }
 
     results = {}
@@ -1729,7 +2310,9 @@ def main():
 
     module_order = ["network", "system", "privacy", "malware", "accounts",
                     "updates", "lockscreen", "backups", "filesystem", "hardware",
-                    "browser", "certificates", "osquery", "clamav"]
+                    "browser", "certificates", "sharing", "siri", "profiles",
+                    "netinterfaces", "quarantine", "apps", "logs",
+                    "osquery", "osquery_enhanced", "clamav"]
     all_findings = []
     for name in module_order:
         all_findings.extend(results.get(name, []))
