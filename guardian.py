@@ -1845,236 +1845,290 @@ def check_osquery_enhanced():
 # ══════════════════════════════════════════════════════════════════════════════
 
 def generate_suggestions(all_findings, score):
-    """Generate personalized security suggestions based on findings."""
+    """Generate personalized, FREE-only security suggestions with step-by-step instructions."""
     suggestions = []
-    sevs = {f.title: f.severity for f in all_findings}
-    cats = {f.title: f.category for f in all_findings}
-    titles = set(sevs.keys())
+    titles = {f.title for f in all_findings}
 
-    # ── Priority fixes (based on current findings) ──
+    # ── Fix current issues first ──
 
     if any(f.severity == CRITICAL for f in all_findings):
         suggestions.append({
             "priority": "HIGH",
-            "title": "Fix critical issues first",
-            "detail": "You have critical security issues that need immediate attention. "
-                      "See the Action Items section above for exact commands."
+            "title": "Fix critical issues immediately [FREE - built into macOS]",
+            "detail": "You have critical security issues. Steps:\n"
+                      "  1. Read the Action Items section above\n"
+                      "  2. Each item has the exact command or setting to fix it\n"
+                      "  3. Fix them in order — critical first, then warnings"
         })
 
-    # Firewall
     if any("firewall" in t.lower() and "disabled" in t.lower() for t in titles):
         suggestions.append({
             "priority": "HIGH",
-            "title": "Enable the macOS firewall",
-            "detail": "Your firewall is off. This is the single most impactful thing you can do.\n"
-                      "Run: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on"
+            "title": "Enable the macOS firewall [FREE - built into macOS]",
+            "detail": "The firewall blocks hackers from connecting to your Mac.\n"
+                      "  Step 1: Open Terminal (Cmd+Space, type Terminal, hit Enter)\n"
+                      "  Step 2: Paste this and hit Enter:\n"
+                      "          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on\n"
+                      "  Step 3: Type your Mac password (won't show as you type) and hit Enter\n"
+                      "  Done — firewall is now on."
         })
 
-    # Stealth mode
     if any("stealth" in t.lower() and "disabled" in t.lower() for t in titles):
         suggestions.append({
             "priority": "MEDIUM",
-            "title": "Enable stealth mode",
-            "detail": "Stealth mode makes your Mac invisible to network port scans — especially\n"
-                      "important on public Wi-Fi (coffee shops, airports, hotels).\n"
-                      "Run: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode on"
+            "title": "Enable stealth mode [FREE - built into macOS]",
+            "detail": "Stealth mode hides your Mac from hackers scanning networks.\n"
+                      "  Step 1: Open Terminal\n"
+                      "  Step 2: Paste this and hit Enter:\n"
+                      "          sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode on\n"
+                      "  Step 3: Enter your password\n"
+                      "  Done — your Mac is now invisible on networks."
         })
 
-    # Updates
     if any("update" in f.title.lower() and f.severity in (CRITICAL, WARNING) for f in all_findings):
         suggestions.append({
             "priority": "HIGH",
-            "title": "Install pending software updates",
-            "detail": "Software updates patch security vulnerabilities that hackers actively exploit.\n"
-                      "Go to: System Settings > General > Software Update"
+            "title": "Install software updates [FREE - built into macOS]",
+            "detail": "Updates fix security holes that hackers actively exploit.\n"
+                      "  Step 1: Click the Apple menu (top-left corner)\n"
+                      "  Step 2: Click 'System Settings'\n"
+                      "  Step 3: Click 'General' in the left sidebar\n"
+                      "  Step 4: Click 'Software Update'\n"
+                      "  Step 5: Click 'Update Now' or 'Upgrade Now'\n"
+                      "  Step 6: Wait for it to download and install (may need to restart)"
         })
 
-    # Backups
     if any("backup" in f.title.lower() and f.severity == WARNING for f in all_findings):
         suggestions.append({
             "priority": "MEDIUM",
-            "title": "Set up regular backups",
+            "title": "Set up Time Machine backups [FREE - built into macOS]",
             "detail": "Backups protect you from ransomware, disk failure, and accidental deletion.\n"
-                      "Connect an external drive > System Settings > General > Time Machine.\n"
-                      "An encrypted backup is even better."
+                      "  Step 1: Connect an external hard drive to your Mac\n"
+                      "  Step 2: Click the Apple menu > System Settings\n"
+                      "  Step 3: Click 'General' > 'Time Machine'\n"
+                      "  Step 4: Click 'Add Backup Disk' and select your drive\n"
+                      "  Step 5: Check 'Encrypt Backups' for extra security\n"
+                      "  Step 6: Click 'Set Up Disk'\n"
+                      "  Done — backups will run automatically whenever the drive is connected."
         })
 
-    # Lock screen
     if any("password not required" in t.lower() for t in titles):
         suggestions.append({
             "priority": "HIGH",
-            "title": "Require password after screensaver",
+            "title": "Require password after screensaver [FREE - built into macOS]",
             "detail": "Without this, anyone can use your Mac when you step away.\n"
-                      "System Settings > Lock Screen > Require password: Immediately"
+                      "  Step 1: Click Apple menu > System Settings\n"
+                      "  Step 2: Click 'Lock Screen'\n"
+                      "  Step 3: Set 'Require password after screen saver begins' to 'Immediately'\n"
+                      "  Done."
         })
 
-    # Auto-login
     if any("auto-login" in t.lower() and "enabled" in t.lower() for t in titles):
         suggestions.append({
             "priority": "HIGH",
-            "title": "Disable auto-login",
-            "detail": "Auto-login means anyone who opens your Mac lid has full access.\n"
-                      "System Settings > Users & Groups > Login Options > Auto Login: Off"
+            "title": "Disable auto-login [FREE - built into macOS]",
+            "detail": "Auto-login means anyone who opens your Mac has full access.\n"
+                      "  Step 1: Click Apple menu > System Settings\n"
+                      "  Step 2: Click 'Users & Groups'\n"
+                      "  Step 3: Click 'Login Options' (at the bottom)\n"
+                      "  Step 4: Set 'Automatic Login' to 'Off'\n"
+                      "  Done."
         })
 
-    # ── Proactive suggestions (always shown) ──
+    # ── Proactive suggestions (always shown, all FREE) ──
 
-    # DNS encryption suggestion
     if any("dns" in t.lower() and "dhcp" in t.lower() for t in titles):
         suggestions.append({
             "priority": "MEDIUM",
-            "title": "Use encrypted DNS for better privacy",
-            "detail": "Your DNS is set to automatic (your ISP can see every website you visit).\n"
-                      "Switch to a privacy-focused DNS:\n"
-                      "  Cloudflare: networksetup -setdnsservers Wi-Fi 1.1.1.1 1.0.0.1\n"
-                      "  Google:     networksetup -setdnsservers Wi-Fi 8.8.8.8 8.8.4.4\n"
-                      "  Quad9:      networksetup -setdnsservers Wi-Fi 9.9.9.9 149.112.112.112\n"
-                      "Cloudflare (1.1.1.1) is fastest and doesn't log your queries."
+            "title": "Use encrypted DNS for privacy [FREE - Cloudflare]",
+            "detail": "Right now your internet provider can see every website you visit.\n"
+                      "Switching to Cloudflare DNS (1.1.1.1) is free and takes 10 seconds.\n"
+                      "  Step 1: Open Terminal\n"
+                      "  Step 2: Paste this and hit Enter:\n"
+                      "          networksetup -setdnsservers Wi-Fi 1.1.1.1 1.0.0.1\n"
+                      "  Done — your DNS queries are now private.\n"
+                      "  To undo later: networksetup -setdnsservers Wi-Fi empty"
         })
 
-    # Free tool suggestions
     if "osqueryi" not in OPTIONAL_BINS:
         suggestions.append({
             "priority": "LOW",
-            "title": "Install osquery for deeper monitoring (free)",
-            "detail": "osquery (by Meta) lets Guardian scan USB device history, process trees,\n"
-                      "detailed network connections, and startup items.\n"
-                      "Install: brew install osquery\n"
-                      "Guardian will automatically detect and use it on next scan."
+            "title": "Install osquery for deeper monitoring [FREE - open source by Meta]",
+            "detail": "Adds USB device tracking, process trees, and detailed network analysis.\n"
+                      "  Step 1: Open Terminal\n"
+                      "  Step 2: Paste this and hit Enter:\n"
+                      "          brew install osquery\n"
+                      "  Step 3: Enter your password if asked\n"
+                      "  Done — Guardian will automatically use it on the next scan."
         })
 
     if "clamscan" not in OPTIONAL_BINS:
         suggestions.append({
             "priority": "LOW",
-            "title": "Install ClamAV for antivirus scanning (free)",
-            "detail": "ClamAV is a free open-source antivirus used by many organizations.\n"
-                      "Guardian will automatically scan /tmp and ~/Downloads each run.\n"
-                      "Install: brew install clamav\n"
-                      "Then run once: sudo freshclam  (downloads virus definitions)"
+            "title": "Install ClamAV antivirus [FREE - open source]",
+            "detail": "Adds real virus scanning to Guardian (scans Downloads, Desktop, /tmp).\n"
+                      "  Step 1: Open Terminal\n"
+                      "  Step 2: Run: brew install clamav\n"
+                      "  Step 3: Run: sudo mkdir -p /opt/homebrew/var/lib/clamav\n"
+                      "  Step 4: Run: sudo chown -R $(whoami) /opt/homebrew/var/lib/clamav\n"
+                      "  Step 5: Run: sudo cp /opt/homebrew/etc/clamav/freshclam.conf.sample /opt/homebrew/etc/clamav/freshclam.conf\n"
+                      "  Step 6: Run: sudo sed -i '' 's/^Example/#Example/' /opt/homebrew/etc/clamav/freshclam.conf\n"
+                      "  Step 7: Run: freshclam   (downloads virus definitions, takes ~2 min)\n"
+                      "  Done — Guardian will automatically scan files on the next run."
         })
 
-    # LuLu firewall suggestion
     lulu_app = pathlib.Path("/Applications/LuLu.app")
     if not lulu_app.exists():
         suggestions.append({
             "priority": "LOW",
-            "title": "Install LuLu for outbound firewall protection (free)",
-            "detail": "macOS firewall only blocks INCOMING connections. LuLu (by Objective-See)\n"
-                      "blocks unauthorized OUTBOUND connections — catches malware phoning home.\n"
-                      "Free download: https://objective-see.org/products/lulu.html"
+            "title": "Install LuLu outbound firewall [FREE - open source by Objective-See]",
+            "detail": "macOS firewall only blocks INCOMING connections. LuLu also blocks\n"
+                      "OUTBOUND connections — catches malware trying to phone home.\n"
+                      "  Step 1: Open Safari and go to: objective-see.org/products/lulu.html\n"
+                      "  Step 2: Click the download button\n"
+                      "  Step 3: Open the downloaded .dmg file\n"
+                      "  Step 4: Drag LuLu to your Applications folder\n"
+                      "  Step 5: Open LuLu from Applications\n"
+                      "  Step 6: Click 'Allow' when macOS asks for permissions\n"
+                      "  Done — LuLu will ask you to approve/block apps that try to connect out."
         })
 
-    # KnockKnock suggestion
     knockknock = pathlib.Path("/Applications/KnockKnock.app")
     if not knockknock.exists():
         suggestions.append({
             "priority": "LOW",
-            "title": "Install KnockKnock for persistence scanning (free)",
-            "detail": "KnockKnock (by Objective-See) scans for persistent malware — programs that\n"
-                      "survive reboot. One-click scan, no background process needed.\n"
-                      "Free download: https://objective-see.org/products/knockknock.html"
+            "title": "Install KnockKnock malware scanner [FREE - open source by Objective-See]",
+            "detail": "Scans for malware that persists after reboot (the most dangerous kind).\n"
+                      "  Step 1: Open Safari and go to: objective-see.org/products/knockknock.html\n"
+                      "  Step 2: Click the download button\n"
+                      "  Step 3: Open the downloaded .dmg file\n"
+                      "  Step 4: Drag KnockKnock to your Applications folder\n"
+                      "  Step 5: Open it and click 'Scan' whenever you want to check\n"
+                      "  No background process — just run it when you want a scan."
         })
 
-    # OverSight suggestion
     oversight = pathlib.Path("/Applications/OverSight.app")
     if not oversight.exists():
         suggestions.append({
             "priority": "LOW",
-            "title": "Install OverSight for camera/mic monitoring (free)",
-            "detail": "OverSight (by Objective-See) alerts you whenever any app activates your\n"
-                      "camera or microphone — catches spyware in real-time.\n"
-                      "Free download: https://objective-see.org/products/oversight.html"
+            "title": "Install OverSight camera/mic monitor [FREE - open source by Objective-See]",
+            "detail": "Alerts you whenever ANY app uses your camera or microphone.\n"
+                      "  Step 1: Open Safari and go to: objective-see.org/products/oversight.html\n"
+                      "  Step 2: Click the download button\n"
+                      "  Step 3: Open the downloaded .dmg file\n"
+                      "  Step 4: Drag OverSight to your Applications folder\n"
+                      "  Step 5: Open OverSight and allow permissions when asked\n"
+                      "  Done — you'll get a popup whenever an app activates your camera or mic."
         })
 
-    # Password manager
     if score >= 80:
         suggestions.append({
             "priority": "MEDIUM",
-            "title": "Use a password manager",
-            "detail": "If you don't already, use a password manager for unique passwords everywhere.\n"
-                      "Free options: Apple Keychain (built-in), Bitwarden (free tier).\n"
-                      "This protects you if any website gets breached."
+            "title": "Use Apple Keychain as your password manager [FREE - built into macOS]",
+            "detail": "Apple Keychain generates and stores unique passwords for every site.\n"
+                      "  Step 1: Click Apple menu > System Settings\n"
+                      "  Step 2: Click 'Passwords' (or your Apple ID > iCloud > Passwords)\n"
+                      "  Step 3: Make sure iCloud Keychain is ON\n"
+                      "  Step 4: When Safari asks to save a password, click 'Save Password'\n"
+                      "  Step 5: Use 'Suggest Strong Password' when creating new accounts\n"
+                      "  Done — Safari will autofill passwords across all your Apple devices."
         })
 
-    # VPN on public Wi-Fi
     suggestions.append({
         "priority": "MEDIUM",
-        "title": "Use a VPN on public Wi-Fi",
+        "title": "Use free VPN on public Wi-Fi [FREE - Cloudflare WARP]",
         "detail": "Public Wi-Fi (coffee shops, airports) can expose your traffic.\n"
-                  "Free options: iCloud Private Relay (if you have iCloud+),\n"
-                  "ProtonVPN (free tier), or Cloudflare WARP (free)."
+                  "  Step 1: Open the App Store on your Mac\n"
+                  "  Step 2: Search for 'Cloudflare WARP' (or '1.1.1.1')\n"
+                  "  Step 3: Click 'Get' to install it (100%% free, no account needed)\n"
+                  "  Step 4: Open WARP from Applications\n"
+                  "  Step 5: Toggle it ON when you're on public Wi-Fi\n"
+                  "  Alternative: ProtonVPN (free tier) from protonvpn.com"
     })
 
-    # AirDrop
     if any("airdrop" in f.title.lower() and "everyone" in f.title.lower() for f in all_findings):
         suggestions.append({
             "priority": "MEDIUM",
-            "title": "Restrict AirDrop to Contacts Only",
+            "title": "Restrict AirDrop [FREE - built into macOS]",
             "detail": "AirDrop set to Everyone lets strangers send you files.\n"
-                      "System Settings > General > AirDrop > Contacts Only"
+                      "  Step 1: Click Apple menu > System Settings\n"
+                      "  Step 2: Click 'General' > 'AirDrop & Handoff'\n"
+                      "  Step 3: Set AirDrop to 'Contacts Only'\n"
+                      "  Done."
         })
 
-    # Siri lock screen
     if any("siri" in f.title.lower() and "lock screen" in f.title.lower() for f in all_findings):
         suggestions.append({
             "priority": "MEDIUM",
-            "title": "Disable Siri on the lock screen",
-            "detail": "Someone can ask Siri to read messages, make calls, etc. without your password.\n"
-                      "System Settings > Siri > Allow Siri When Locked > OFF"
+            "title": "Disable Siri on lock screen [FREE - built into macOS]",
+            "detail": "Someone can ask Siri questions without unlocking your Mac.\n"
+                      "  Step 1: Click Apple menu > System Settings\n"
+                      "  Step 2: Click 'Siri'\n"
+                      "  Step 3: Turn OFF 'Allow Siri When Locked'\n"
+                      "  Done."
         })
 
-    # Failed sudo
     if any("failed sudo" in f.title.lower() and f.severity == WARNING for f in all_findings):
         suggestions.append({
             "priority": "HIGH",
-            "title": "Investigate failed sudo attempts",
-            "detail": "Failed sudo attempts mean someone tried to run admin commands with wrong password.\n"
-                      "If it wasn't you, change your password immediately:\n"
-                      "System Settings > Users & Groups > Change Password"
+            "title": "Investigate failed sudo attempts [FREE - built into macOS]",
+            "detail": "Someone tried to run admin commands with the wrong password.\n"
+                      "  Step 1: Check if it was you (did you mistype your password recently?)\n"
+                      "  Step 2: If it wasn't you, change your password NOW:\n"
+                      "          Apple menu > System Settings > Users & Groups > Change Password\n"
+                      "  Step 3: Pick a strong password (12+ characters, mix of letters/numbers)\n"
+                      "  Step 4: Check for any apps or people you don't recognize on your Mac"
         })
 
-    # Long uptime
     if any("uptime" in f.title.lower() and f.severity == WARNING for f in all_findings):
         suggestions.append({
             "priority": "MEDIUM",
-            "title": "Restart your Mac",
-            "detail": "Your Mac has been running for over 30 days without a restart.\n"
-                      "Security updates often require a reboot to take effect."
+            "title": "Restart your Mac [FREE]",
+            "detail": "Your Mac has been on for over 30 days. Security updates need a restart.\n"
+                      "  Step 1: Save any open work\n"
+                      "  Step 2: Click Apple menu > Restart\n"
+                      "  Done."
         })
 
-    # Two-factor authentication
     suggestions.append({
         "priority": "MEDIUM",
-        "title": "Enable two-factor authentication for Apple ID",
-        "detail": "If not already enabled, 2FA prevents someone from accessing your\n"
-                  "iCloud even if they know your password.\n"
-                  "System Settings > Apple ID > Sign-In & Security > Two-Factor Authentication"
+        "title": "Enable two-factor authentication [FREE - built into Apple ID]",
+        "detail": "2FA stops hackers even if they steal your password.\n"
+                  "  Step 1: Click Apple menu > System Settings\n"
+                  "  Step 2: Click your name at the top (Apple ID)\n"
+                  "  Step 3: Click 'Sign-In & Security'\n"
+                  "  Step 4: Click 'Two-Factor Authentication' and follow the steps\n"
+                  "  Done — Apple will text you a code when someone tries to sign in."
     })
 
-    # Safari safe browsing
     suggestions.append({
         "priority": "LOW",
-        "title": "Enable fraudulent website warnings in Safari",
-        "detail": "Safari can warn you about phishing sites.\n"
-                  "Safari > Settings > Security > Fraudulent sites: ON"
+        "title": "Enable Safari phishing protection [FREE - built into Safari]",
+        "detail": "Safari can warn you before you visit fake/scam websites.\n"
+                  "  Step 1: Open Safari\n"
+                  "  Step 2: Click Safari menu > Settings (or Cmd+,)\n"
+                  "  Step 3: Click the 'Security' tab\n"
+                  "  Step 4: Check 'Warn when visiting a fraudulent website'\n"
+                  "  Done."
     })
 
-    # Physical security
-    if score >= 85:
-        suggestions.append({
-            "priority": "LOW",
-            "title": "Enable Find My Mac",
-            "detail": "If your Mac is lost or stolen, Find My Mac can locate, lock, or erase it.\n"
-                      "System Settings > Apple ID > Find My > Find My Mac: ON"
-        })
-
-    # Auto-lock
     suggestions.append({
         "priority": "LOW",
-        "title": "Set a firmware password (Intel) or enable Activation Lock (Apple Silicon)",
-        "detail": "Prevents someone from booting your Mac from USB or resetting it.\n"
-                  "Apple Silicon: automatic with Find My Mac enabled.\n"
-                  "Intel: Boot Recovery Mode > Utilities > Startup Security Utility"
+        "title": "Enable Find My Mac [FREE - built into macOS]",
+        "detail": "If your Mac is lost or stolen, you can locate, lock, or erase it remotely.\n"
+                  "  Step 1: Click Apple menu > System Settings\n"
+                  "  Step 2: Click your name (Apple ID) > 'Find My'\n"
+                  "  Step 3: Turn ON 'Find My Mac'\n"
+                  "  Step 4: Also turn ON 'Find My network' (helps find it even when offline)\n"
+                  "  Done — go to icloud.com/find from any device to locate your Mac."
+    })
+
+    suggestions.append({
+        "priority": "LOW",
+        "title": "Enable Activation Lock [FREE - automatic with Find My Mac on Apple Silicon]",
+        "detail": "Prevents anyone from erasing and reusing your Mac if stolen.\n"
+                  "  If you have Apple Silicon (M1/M2/M3/M4): automatic when Find My Mac is on.\n"
+                  "  If you have Intel: Boot into Recovery Mode > Utilities > Startup Security Utility."
     })
 
     return suggestions
