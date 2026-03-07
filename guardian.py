@@ -2014,6 +2014,283 @@ def check_deep_hardening():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  MODULE 23 — EXTRA HARDENING (Bluetooth, Wi-Fi, Screen Lock, Analytics,
+#                                Swap Encryption, Keychain Auto-Lock)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_extra_hardening():
+    findings = []
+
+    # 23a. Bluetooth security — discoverable mode & Bluetooth sharing
+    out, _ = safe_run("defaults", ["read",
+        "/Library/Preferences/com.apple.Bluetooth", "ControllerPowerState"], timeout=10)
+    bt_on = out and out.strip() == "1"
+
+    if bt_on:
+        findings.append(Finding(OK, "Bluetooth", "Bluetooth is ON"))
+
+        # Check discoverability
+        out, _ = safe_run("defaults", ["read",
+            "/Library/Preferences/com.apple.Bluetooth", "BRSetupPayload"], timeout=10)
+        # On modern macOS, Bluetooth is only discoverable in System Settings.
+        # Check if discoverable while not in settings (via blueutil or defaults)
+        # The safest approach: check if Bluetooth Sharing is on
+        out, _ = safe_run("defaults", ["read",
+            "com.apple.Bluetooth", "PrefKeyServicesEnabled"], timeout=10)
+        if out and out.strip() == "1":
+            findings.append(Finding(WARNING, "Bluetooth",
+                "Bluetooth Sharing is ON — other devices can browse your files",
+                fix="System Settings > General > Sharing > Bluetooth Sharing: OFF"))
+        else:
+            findings.append(Finding(OK, "Bluetooth", "Bluetooth Sharing is off"))
+
+        # Check for paired devices (informational)
+        out, _ = safe_run("system_profiler", ["SPBluetoothDataType", "-json"], timeout=15)
+        if out:
+            try:
+                bt_data = json.loads(out)
+                bt_info = bt_data.get("SPBluetoothDataType", [{}])[0]
+                # Count connected/paired devices
+                devices = []
+                for key in ["device_connected", "device_not_connected"]:
+                    dev_list = bt_info.get(key, [])
+                    for dev in dev_list:
+                        if isinstance(dev, dict):
+                            devices.extend(dev.keys())
+                if devices:
+                    findings.append(Finding(INFO, "Bluetooth",
+                        f"{len(devices)} paired Bluetooth device(s)",
+                        "\n".join(devices[:8])))
+            except Exception:
+                pass
+    else:
+        findings.append(Finding(OK, "Bluetooth",
+            "Bluetooth is OFF (most secure state)"))
+
+    # 23b. Wi-Fi network security — check encryption type of connected network
+    out, _ = safe_run("networksetup", ["-getairportnetwork", "en0"], timeout=10)
+    if out and "Current Wi-Fi Network" in out:
+        network_name = out.split(":", 1)[-1].strip() if ":" in out else "Unknown"
+        # Use system_profiler for Wi-Fi details
+        out2, _ = safe_run("system_profiler", ["SPAirPortDataType", "-json"], timeout=15)
+        if out2:
+            try:
+                wifi_data = json.loads(out2)
+                airport = wifi_data.get("SPAirPortDataType", [{}])[0]
+                interfaces = airport.get("spairport_airport_interfaces", [])
+                wifi_security = "Unknown"
+                for iface in interfaces:
+                    current = iface.get("spairport_current_network_information", {})
+                    if current:
+                        wifi_security = current.get("spairport_security_mode", "Unknown")
+                        break
+
+                security_lower = wifi_security.lower()
+                if "wpa3" in security_lower:
+                    findings.append(Finding(OK, "Wi-Fi",
+                        f"Connected to '{network_name}' with WPA3 (strongest encryption)"))
+                elif "wpa2" in security_lower and "personal" in security_lower:
+                    findings.append(Finding(OK, "Wi-Fi",
+                        f"Connected to '{network_name}' with WPA2 Personal",
+                        detail="WPA2 is secure for home use. WPA3 is even better if your router supports it."))
+                elif "wpa2" in security_lower:
+                    findings.append(Finding(OK, "Wi-Fi",
+                        f"Connected to '{network_name}' with WPA2"))
+                elif "wep" in security_lower:
+                    findings.append(Finding(CRITICAL, "Wi-Fi",
+                        f"'{network_name}' uses WEP — easily hackable!",
+                        fix="WEP can be cracked in minutes. Switch your router to WPA2/WPA3 immediately."))
+                elif "none" in security_lower or "open" in security_lower:
+                    findings.append(Finding(WARNING, "Wi-Fi",
+                        f"'{network_name}' is an OPEN network (no encryption)",
+                        fix="Anyone nearby can see your traffic. Use a VPN (Cloudflare WARP, free)."))
+                else:
+                    findings.append(Finding(INFO, "Wi-Fi",
+                        f"Connected to '{network_name}' (security: {wifi_security})"))
+            except Exception:
+                findings.append(Finding(INFO, "Wi-Fi",
+                    f"Connected to '{network_name}'"))
+    elif out and "not associated" in out.lower():
+        findings.append(Finding(INFO, "Wi-Fi", "Not connected to any Wi-Fi network"))
+    else:
+        # Try en1 for some Mac models
+        out, _ = safe_run("networksetup", ["-getairportnetwork", "en1"], timeout=10)
+        if out and "Current Wi-Fi Network" in out:
+            network_name = out.split(":", 1)[-1].strip() if ":" in out else "Unknown"
+            findings.append(Finding(INFO, "Wi-Fi", f"Connected to '{network_name}'"))
+
+    # 23c. Screen lock timeout — how long before screen locks
+    # Check screen saver idle time
+    out, _ = safe_run("defaults", ["-currentHost", "read",
+        "com.apple.screensaver", "idleTime"], timeout=10)
+    screensaver_time = None
+    if out:
+        try:
+            screensaver_time = int(out.strip())
+        except (ValueError, TypeError):
+            pass
+
+    # Check password delay after screen saver/sleep
+    out, _ = safe_run("sysctl", ["-n", "kern.screensaver_delay"], timeout=10)
+    # Alternative: check via defaults
+    out2, _ = safe_run("defaults", ["read",
+        "com.apple.screensaver", "askForPassword"], timeout=10)
+    password_required = out2 and out2.strip() == "1"
+
+    out3, _ = safe_run("defaults", ["read",
+        "com.apple.screensaver", "askForPasswordDelay"], timeout=10)
+    password_delay = None
+    if out3:
+        try:
+            password_delay = int(float(out3.strip()))
+        except (ValueError, TypeError):
+            pass
+
+    if screensaver_time is not None:
+        minutes = screensaver_time // 60
+        if minutes == 0:
+            findings.append(Finding(INFO, "Screen Lock",
+                "Screen saver is disabled (set an idle time for auto-lock)"))
+        elif minutes <= 5:
+            findings.append(Finding(OK, "Screen Lock",
+                f"Screen saver activates after {minutes} minute(s) (good)"))
+        elif minutes <= 15:
+            findings.append(Finding(INFO, "Screen Lock",
+                f"Screen saver activates after {minutes} minutes",
+                fix="Consider reducing to 5 minutes: System Settings > Lock Screen"))
+        else:
+            findings.append(Finding(WARNING, "Screen Lock",
+                f"Screen saver activates after {minutes} minutes — too long",
+                fix="Set to 5 minutes or less: System Settings > Lock Screen"))
+
+    if password_required:
+        if password_delay is not None:
+            if password_delay == 0:
+                findings.append(Finding(OK, "Screen Lock",
+                    "Password required immediately after screen lock"))
+            elif password_delay <= 5:
+                findings.append(Finding(OK, "Screen Lock",
+                    f"Password required {password_delay} second(s) after screen lock"))
+            elif password_delay <= 60:
+                findings.append(Finding(INFO, "Screen Lock",
+                    f"Password required {password_delay} seconds after screen lock",
+                    fix="Set to 'Immediately': System Settings > Lock Screen"))
+            else:
+                minutes = password_delay // 60
+                findings.append(Finding(WARNING, "Screen Lock",
+                    f"Password not required until {minutes} minute(s) after screen lock",
+                    detail="Someone could access your Mac during this window.",
+                    fix="Set to 'Immediately': System Settings > Lock Screen"))
+        else:
+            findings.append(Finding(OK, "Screen Lock",
+                "Password required after screen lock"))
+    else:
+        # Check if it's just unreadable vs actually off
+        if out2 is not None and out2.strip() == "0":
+            findings.append(Finding(CRITICAL, "Screen Lock",
+                "Password NOT required after screen lock!",
+                detail="Anyone can use your Mac when the screen saver stops.",
+                fix="System Settings > Lock Screen > Require password: Immediately"))
+
+    # 23d. macOS Analytics & diagnostics sharing
+    analytics_checks = [
+        ("com.apple.SubmitDiagInfo", "AutoSubmit",
+         "Share Mac Analytics with Apple", "Share Mac Analytics"),
+        ("com.apple.SubmitDiagInfo", "ThirdPartyDataSubmit",
+         "Share analytics with app developers", "Share with App Developers"),
+    ]
+    for domain, key, warning_text, ok_text in analytics_checks:
+        out, _ = safe_run("defaults", ["read",
+            f"/Library/Application Support/CrashReporter/{domain}", key], timeout=10)
+        if out is None:
+            # Try alternative path
+            out, _ = safe_run("defaults", ["read", domain, key], timeout=10)
+        if out and out.strip() == "1":
+            findings.append(Finding(INFO, "Analytics",
+                f"{warning_text} is ON",
+                detail="Apple/developers receive crash reports and usage data.",
+                fix=f"System Settings > Privacy & Security > Analytics & Improvements > turn OFF"))
+        elif out and out.strip() == "0":
+            findings.append(Finding(OK, "Analytics", f"{ok_text} is off"))
+
+    # Check Siri analytics
+    out, _ = safe_run("defaults", ["read",
+        "com.apple.assistant.support", "Siri Data Sharing Opt-In Status"], timeout=10)
+    if out and out.strip() == "2":
+        findings.append(Finding(INFO, "Analytics",
+            "Siri audio recordings may be shared with Apple",
+            fix="System Settings > Privacy & Security > Analytics > Improve Siri: OFF"))
+
+    # 23e. Swap file encryption — virtual memory should be encrypted
+    out, _ = safe_run("sysctl", ["-n", "vm.swapusage"], timeout=10)
+    if out:
+        findings.append(Finding(INFO, "Swap", f"Swap usage: {out.strip()[:60]}"))
+
+    # Check if swap is encrypted (it is by default on macOS with FileVault)
+    out, _ = safe_run("sysctl", ["-n", "vm.swap_enabled"], timeout=10)
+    swap_enabled = out and out.strip() == "1"
+
+    # On macOS, swap is encrypted when FileVault is on
+    fv_out, _ = safe_run("fdesetup", ["status"], timeout=10)
+    filevault_on = fv_out and "On" in fv_out
+
+    if swap_enabled:
+        if filevault_on:
+            findings.append(Finding(OK, "Swap",
+                "Swap is encrypted (FileVault protects all disk data including swap)"))
+        else:
+            findings.append(Finding(WARNING, "Swap",
+                "Swap may contain unencrypted sensitive data",
+                detail="Without FileVault, passwords in memory can leak to swap files on disk.",
+                fix="Enable FileVault: System Settings > Privacy & Security > FileVault: Turn On"))
+
+    # 23f. Keychain auto-lock settings
+    out, _ = safe_run("security", ["show-keychain-info",
+        os.path.expanduser("~/Library/Keychains/login.keychain-db")], timeout=10)
+    if out or True:
+        # security show-keychain-info outputs to stderr
+        _, err = safe_run("security", ["show-keychain-info",
+            os.path.expanduser("~/Library/Keychains/login.keychain-db")], timeout=10)
+        if err:
+            # Parse timeout and lock-on-sleep from stderr
+            lock_on_sleep = "lock-on-sleep" in err.lower()
+            # Extract timeout
+            timeout_match = re.search(r"timeout=(\d+)s", err)
+            if timeout_match:
+                timeout_sec = int(timeout_match.group(1))
+                timeout_hours = timeout_sec // 3600
+                if timeout_sec == 0 or timeout_sec > 86400:
+                    findings.append(Finding(WARNING, "Keychain",
+                        "Keychain never auto-locks (timeout disabled)",
+                        detail="Your saved passwords stay accessible indefinitely.",
+                        fix="Terminal: security set-keychain-settings -t 28800 -l ~/Library/Keychains/login.keychain-db\n"
+                            "(sets 8-hour timeout + lock on sleep)"))
+                elif timeout_hours >= 24:
+                    findings.append(Finding(INFO, "Keychain",
+                        f"Keychain auto-locks after {timeout_hours} hour(s)",
+                        fix="Consider shorter timeout: security set-keychain-settings -t 28800 -l ~/Library/Keychains/login.keychain-db"))
+                else:
+                    findings.append(Finding(OK, "Keychain",
+                        f"Keychain auto-locks after {timeout_hours} hour(s)"))
+            elif "no-timeout" in err.lower():
+                findings.append(Finding(WARNING, "Keychain",
+                    "Keychain never auto-locks",
+                    detail="Your saved passwords stay accessible indefinitely.",
+                    fix="Terminal: security set-keychain-settings -t 28800 -l ~/Library/Keychains/login.keychain-db"))
+
+            if lock_on_sleep:
+                findings.append(Finding(OK, "Keychain",
+                    "Keychain locks on sleep (good)"))
+            elif "no-lock-on-sleep" in err.lower():
+                findings.append(Finding(WARNING, "Keychain",
+                    "Keychain does NOT lock when Mac sleeps",
+                    detail="Passwords remain accessible even when your Mac lid is closed.",
+                    fix="Terminal: security set-keychain-settings -l -t 28800 ~/Library/Keychains/login.keychain-db"))
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ENHANCED OSQUERY CHECKS (more queries if osquery is available)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2400,6 +2677,110 @@ def generate_suggestions(all_findings, score):
                   "  If you have Intel: Boot into Recovery Mode > Utilities > Startup Security Utility."
     })
 
+    # Bluetooth sharing suggestion
+    if any("bluetooth sharing" in f.title.lower() and f.severity == WARNING for f in all_findings):
+        suggestions.append({
+            "priority": "MEDIUM",
+            "title": "Turn off Bluetooth Sharing [FREE - built into macOS]",
+            "detail": "Bluetooth Sharing lets other devices browse your files.\n"
+                      "  Step 1: Click Apple menu > System Settings\n"
+                      "  Step 2: Click 'General' > 'Sharing'\n"
+                      "  Step 3: Turn OFF 'Bluetooth Sharing'\n"
+                      "  Done."
+        })
+
+    # Open Wi-Fi suggestion
+    if any("open network" in f.title.lower() and f.severity == WARNING for f in all_findings):
+        suggestions.append({
+            "priority": "HIGH",
+            "title": "You're on an open Wi-Fi network [FREE - use a VPN]",
+            "detail": "Open networks have NO encryption — anyone nearby can see your traffic.\n"
+                      "  Step 1: Open the App Store and search 'Cloudflare WARP'\n"
+                      "  Step 2: Install it (100%% free)\n"
+                      "  Step 3: Open WARP and toggle it ON\n"
+                      "  This encrypts all your traffic even on open Wi-Fi."
+        })
+
+    # WEP Wi-Fi suggestion
+    if any("wep" in f.title.lower() and f.severity == CRITICAL for f in all_findings):
+        suggestions.append({
+            "priority": "HIGH",
+            "title": "Your Wi-Fi uses WEP — change it NOW [FREE - router setting]",
+            "detail": "WEP encryption can be cracked in under 5 minutes.\n"
+                      "  Step 1: Open your router settings (usually 192.168.1.1 in a browser)\n"
+                      "  Step 2: Find Wireless Security settings\n"
+                      "  Step 3: Change from WEP to WPA2 or WPA3\n"
+                      "  Step 4: Set a strong password\n"
+                      "  Step 5: Reconnect your devices with the new password"
+        })
+
+    # Screen lock timeout suggestion
+    if any("too long" in f.title.lower() and "screen" in f.title.lower() for f in all_findings):
+        suggestions.append({
+            "priority": "MEDIUM",
+            "title": "Reduce screen lock timeout [FREE - built into macOS]",
+            "detail": "Your screen takes too long to lock when idle.\n"
+                      "  Step 1: Click Apple menu > System Settings\n"
+                      "  Step 2: Click 'Lock Screen'\n"
+                      "  Step 3: Set 'Turn display off on battery when inactive' to 2 or 5 minutes\n"
+                      "  Step 4: Set 'Require password after screen saver begins' to 'Immediately'\n"
+                      "  Done."
+        })
+
+    # Screen lock password not required
+    if any("password not required after screen lock" in f.title.lower() for f in all_findings):
+        suggestions.append({
+            "priority": "HIGH",
+            "title": "Require password after screen lock [FREE - built into macOS]",
+            "detail": "Anyone can use your Mac after the screen saver stops!\n"
+                      "  Step 1: Click Apple menu > System Settings\n"
+                      "  Step 2: Click 'Lock Screen'\n"
+                      "  Step 3: Set 'Require password after screen saver begins' to 'Immediately'\n"
+                      "  Done."
+        })
+
+    # Analytics suggestion
+    if any("analytics" in f.category.lower() and f.severity == INFO and "on" in f.title.lower()
+           for f in all_findings):
+        suggestions.append({
+            "priority": "LOW",
+            "title": "Disable analytics sharing for more privacy [FREE - built into macOS]",
+            "detail": "Apple and app developers receive usage data and crash reports.\n"
+                      "  Step 1: Click Apple menu > System Settings\n"
+                      "  Step 2: Click 'Privacy & Security'\n"
+                      "  Step 3: Scroll down and click 'Analytics & Improvements'\n"
+                      "  Step 4: Turn OFF all toggles (Share Mac Analytics, Share with App Developers, etc.)\n"
+                      "  Done — your Mac works exactly the same, just more private."
+        })
+
+    # Keychain auto-lock suggestion
+    if any("keychain" in f.title.lower() and "never" in f.title.lower() and f.severity == WARNING
+           for f in all_findings):
+        suggestions.append({
+            "priority": "MEDIUM",
+            "title": "Set keychain to auto-lock [FREE - built into macOS]",
+            "detail": "Your saved passwords stay accessible forever until you manually lock them.\n"
+                      "  Step 1: Open Terminal\n"
+                      "  Step 2: Paste this and hit Enter:\n"
+                      "          security set-keychain-settings -t 28800 -l ~/Library/Keychains/login.keychain-db\n"
+                      "  This sets an 8-hour timeout and locks when your Mac sleeps.\n"
+                      "  Done — passwords are now auto-protected."
+        })
+
+    # Swap encryption suggestion
+    if any("swap" in f.title.lower() and "unencrypted" in f.title.lower() for f in all_findings):
+        suggestions.append({
+            "priority": "HIGH",
+            "title": "Enable FileVault to encrypt swap [FREE - built into macOS]",
+            "detail": "Without FileVault, passwords in memory can leak to disk.\n"
+                      "  Step 1: Click Apple menu > System Settings\n"
+                      "  Step 2: Click 'Privacy & Security'\n"
+                      "  Step 3: Click 'FileVault'\n"
+                      "  Step 4: Click 'Turn On FileVault'\n"
+                      "  Step 5: Choose to store recovery key with Apple or write it down\n"
+                      "  Initial encryption takes a few hours but won't slow your Mac."
+        })
+
     return suggestions
 
 
@@ -2611,6 +2992,7 @@ def main():
         "apps": check_app_security,
         "logs": check_system_logs,
         "hardening": check_deep_hardening,
+        "extra": check_extra_hardening,
         "osquery_enhanced": check_osquery_enhanced,
     }
 
@@ -2636,7 +3018,8 @@ def main():
                     "updates", "lockscreen", "backups", "filesystem", "hardware",
                     "browser", "certificates", "sharing", "siri", "profiles",
                     "netinterfaces", "quarantine", "apps", "logs",
-                    "hardening", "osquery", "osquery_enhanced", "clamav"]
+                    "hardening", "extra",
+                    "osquery", "osquery_enhanced", "clamav"]
     all_findings = []
     for name in module_order:
         all_findings.extend(results.get(name, []))
