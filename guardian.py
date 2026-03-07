@@ -1745,6 +1745,253 @@ def check_system_logs():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  MODULE 22: DEEP SYSTEM HARDENING (final checks)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def check_deep_hardening():
+    findings = []
+    home = pathlib.Path.home()
+
+    # 22a. /etc/hosts hijacking — check for suspicious redirects
+    hosts_file = pathlib.Path("/etc/hosts")
+    if hosts_file.is_file():
+        try:
+            content = hosts_file.read_text()
+            suspicious_hosts = []
+            for line in content.split("\n"):
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    ip = parts[0]
+                    hostname = parts[1]
+                    # Ignore localhost entries and broadcasthost
+                    if hostname in ("localhost", "broadcasthost", "localhost.localdomain"):
+                        continue
+                    # Flag entries redirecting known sites to different IPs
+                    if ip not in ("127.0.0.1", "::1", "255.255.255.255", "0.0.0.0", "fe80::1%lo0"):
+                        suspicious_hosts.append(f"{ip}  {hostname}")
+                    # Also flag if legit domains are redirected to 127.0.0.1 (could be adware)
+                    if ip == "127.0.0.1" and any(d in hostname for d in
+                            [".google.", ".apple.", ".microsoft.", ".amazon.",
+                             ".facebook.", ".instagram.", ".twitter.", ".github."]):
+                        suspicious_hosts.append(f"BLOCKED: {hostname} -> {ip}")
+            if suspicious_hosts:
+                findings.append(Finding(WARNING, "Hardening",
+                    f"{len(suspicious_hosts)} suspicious /etc/hosts entry(ies)",
+                    "\n".join(suspicious_hosts[:10]),
+                    fix="Review /etc/hosts — malware can redirect websites to steal credentials"))
+            else:
+                findings.append(Finding(OK, "Hardening", "/etc/hosts file is clean"))
+        except Exception:
+            pass
+
+    # 22b. /etc/sudoers NOPASSWD audit
+    sudoers = pathlib.Path("/etc/sudoers")
+    if sudoers.is_file():
+        try:
+            content = sudoers.read_text()
+            nopasswd_lines = []
+            for line in content.split("\n"):
+                line = line.strip()
+                if "NOPASSWD" in line and not line.startswith("#"):
+                    nopasswd_lines.append(line)
+            if nopasswd_lines:
+                findings.append(Finding(WARNING, "Hardening",
+                    f"{len(nopasswd_lines)} NOPASSWD rule(s) in sudoers",
+                    "\n".join(nopasswd_lines[:5]),
+                    fix="NOPASSWD lets programs run as admin without your password — review carefully"))
+            else:
+                findings.append(Finding(OK, "Hardening", "No NOPASSWD rules in sudoers"))
+        except PermissionError:
+            # Can't read sudoers without root — that's fine, it means permissions are correct
+            findings.append(Finding(OK, "Hardening", "sudoers file permissions are restricted (good)"))
+
+    # Also check sudoers.d directory
+    sudoers_d = pathlib.Path("/etc/sudoers.d")
+    if sudoers_d.is_dir():
+        try:
+            custom_sudoers = [f.name for f in sudoers_d.iterdir()
+                              if f.is_file() and not f.name.startswith(".")]
+            if custom_sudoers:
+                findings.append(Finding(INFO, "Hardening",
+                    f"{len(custom_sudoers)} custom sudoers file(s)",
+                    "\n".join(custom_sudoers[:5])))
+        except Exception:
+            pass
+
+    # 22c. Shell startup file tampering — scan for suspicious commands
+    shell_files = [
+        home / ".zshrc", home / ".zprofile", home / ".zshenv",
+        home / ".bash_profile", home / ".bashrc", home / ".profile",
+    ]
+    suspicious_patterns = [
+        (r"curl\s+.*\|\s*(ba)?sh", "Downloads and executes remote code"),
+        (r"wget\s+.*\|\s*(ba)?sh", "Downloads and executes remote code"),
+        (r"eval\s+\$\(", "Evaluates dynamically generated commands"),
+        (r"base64\s+(-d|--decode)", "Decodes hidden base64 content"),
+        (r"nc\s+-l", "Netcat listener (possible reverse shell)"),
+        (r"ncat\s+-l", "Ncat listener (possible reverse shell)"),
+        (r"/dev/tcp/", "Bash TCP connection (possible reverse shell)"),
+        (r"export\s+PATH=.*:/tmp", "/tmp added to PATH (malware technique)"),
+        (r"alias\s+sudo=", "sudo alias override (credential stealing)"),
+        (r"alias\s+ssh=", "ssh alias override (credential stealing)"),
+    ]
+    tampered = []
+    for sf in shell_files:
+        if not sf.is_file():
+            continue
+        try:
+            content = sf.read_text()
+            for pattern, desc in suspicious_patterns:
+                if re.search(pattern, content):
+                    tampered.append(f"{sf.name}: {desc}")
+        except Exception:
+            pass
+
+    if tampered:
+        findings.append(Finding(CRITICAL, "Hardening",
+            f"{len(tampered)} suspicious command(s) in shell startup files!",
+            "\n".join(tampered[:10]),
+            fix="Review your shell files — these could be malware injections"))
+    else:
+        findings.append(Finding(OK, "Hardening", "Shell startup files look clean"))
+
+    # 22d. Find My Mac status
+    out, _ = safe_run("defaults", ["read",
+        "com.apple.FindMyMac", "FMMEnabled"], timeout=10)
+    if out:
+        if out.strip() == "1":
+            findings.append(Finding(OK, "Hardening", "Find My Mac is enabled"))
+        else:
+            findings.append(Finding(WARNING, "Hardening",
+                "Find My Mac is DISABLED",
+                fix="System Settings > Apple ID > Find My > Find My Mac: ON"))
+    else:
+        # Alternative check
+        out, _ = safe_run("defaults", ["read",
+            "/Library/Preferences/com.apple.FindMyMac", "FMMEnabled"], timeout=10)
+        if out and out.strip() == "1":
+            findings.append(Finding(OK, "Hardening", "Find My Mac is enabled"))
+        else:
+            findings.append(Finding(WARNING, "Hardening",
+                "Find My Mac may be disabled",
+                fix="System Settings > Apple ID > Find My > Find My Mac: ON"))
+
+    # 22e. Secure Keyboard Entry in Terminal
+    out, _ = safe_run("defaults", ["read",
+        "com.apple.Terminal", "SecureKeyboardEntry"], timeout=10)
+    if out and out.strip() == "1":
+        findings.append(Finding(OK, "Hardening", "Terminal Secure Keyboard Entry is ON"))
+    else:
+        findings.append(Finding(WARNING, "Hardening",
+            "Terminal Secure Keyboard Entry is OFF",
+            detail="Without this, other apps can read what you type in Terminal (passwords, etc).",
+            fix="Open Terminal > Terminal menu > Secure Keyboard Entry > check it ON"))
+
+    # 22f. at/batch job scheduler — another persistence mechanism
+    at_dir = pathlib.Path("/var/at/jobs")
+    if at_dir.is_dir():
+        try:
+            at_jobs = [f.name for f in at_dir.iterdir() if f.is_file()]
+            if at_jobs:
+                findings.append(Finding(WARNING, "Hardening",
+                    f"{len(at_jobs)} at/batch job(s) found",
+                    "\n".join(at_jobs[:5]),
+                    fix="Review: sudo atq — remove suspicious ones: sudo atrm <job#>"))
+            else:
+                findings.append(Finding(OK, "Hardening", "No at/batch jobs"))
+        except Exception:
+            findings.append(Finding(OK, "Hardening", "at/batch job directory not accessible (normal)"))
+
+    # 22g. Safari privacy settings
+    out, _ = safe_run("defaults", ["read",
+        "com.apple.Safari", "SendDoNotTrackHTTPHeader"], timeout=10)
+    if out and out.strip() == "0":
+        findings.append(Finding(INFO, "Hardening",
+            "Safari 'Do Not Track' header is OFF",
+            fix="Safari > Settings > Privacy > Prevent cross-site tracking: ON"))
+
+    out, _ = safe_run("defaults", ["read",
+        "com.apple.Safari", "WebKitPreferences.privateClickMeasurementEnabled"], timeout=10)
+
+    # Check Safari fraudulent website warning
+    out, _ = safe_run("defaults", ["read",
+        "com.apple.Safari", "WarnAboutFraudulentWebsites"], timeout=10)
+    if out and out.strip() == "0":
+        findings.append(Finding(WARNING, "Hardening",
+            "Safari fraudulent website warning is OFF",
+            fix="Safari > Settings > Security > Warn when visiting a fraudulent website: ON"))
+    elif out and out.strip() == "1":
+        findings.append(Finding(OK, "Hardening", "Safari phishing protection is ON"))
+
+    # 22h. SUID/SGID binaries in unusual locations
+    suid_dirs = ["/usr/local/bin", "/opt/homebrew/bin",
+                 str(home / ".local/bin"), "/tmp", "/var/tmp"]
+    suid_files = []
+    for d in suid_dirs:
+        p = pathlib.Path(d)
+        if not p.is_dir():
+            continue
+        try:
+            for f in p.iterdir():
+                try:
+                    if f.is_file():
+                        mode = f.stat().st_mode
+                        if mode & stat.S_ISUID or mode & stat.S_ISGID:
+                            suid_files.append(f"{f} (mode: {oct(mode)[-4:]})")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if suid_files:
+        findings.append(Finding(CRITICAL, "Hardening",
+            f"{len(suid_files)} SUID/SGID binary(ies) in non-system directories!",
+            "\n".join(suid_files[:10]),
+            fix="SUID binaries run with elevated privileges — remove if unexpected: chmod u-s <file>"))
+    else:
+        findings.append(Finding(OK, "Hardening", "No SUID/SGID binaries in user directories"))
+
+    # 22i. Check for iCloud Private Relay
+    out, _ = safe_run("defaults", ["read",
+        "com.apple.Safari", "WBSPrivacyProxyAvailabilityTraffic"], timeout=10)
+    # Private Relay is hard to check directly — check via network settings
+    out, _ = safe_run("defaults", ["read",
+        "/Library/Preferences/com.apple.networkextension", "PrivateRelay"], timeout=10)
+    # Simplified: just note if it could be checked
+    # iCloud Private Relay depends on iCloud+ subscription, so we just inform
+    icloud_pr = pathlib.Path(home / "Library/Preferences/com.apple.iCloudPrivateRelay.plist")
+    if icloud_pr.exists():
+        findings.append(Finding(OK, "Hardening", "iCloud Private Relay config detected"))
+    else:
+        findings.append(Finding(INFO, "Hardening",
+            "iCloud Private Relay not detected",
+            detail="Private Relay hides your IP and encrypts Safari traffic.",
+            fix="Requires iCloud+ (starts at $0.99/mo) — free alternative: Cloudflare WARP"))
+
+    # 22j. Login/logout hooks (legacy persistence mechanism)
+    for hook_type in ["LoginHook", "LogoutHook"]:
+        out, _ = safe_run("defaults", ["read",
+            "com.apple.loginwindow", hook_type], timeout=10)
+        if out and "does not exist" not in out.lower():
+            findings.append(Finding(WARNING, "Hardening",
+                f"{hook_type} is set: {out.strip()[:60]}",
+                detail="Login/logout hooks are a legacy persistence mechanism used by malware.",
+                fix=f"Remove: sudo defaults delete com.apple.loginwindow {hook_type}"))
+
+    # 22k. Check Remote Management (ARD)
+    out, _ = safe_run("launchctl", ["print", "system/com.apple.RemoteDesktop.agent"], timeout=10)
+    if out and "state = running" in out.lower():
+        findings.append(Finding(WARNING, "Hardening",
+            "Apple Remote Desktop agent is running",
+            fix="If not needed: System Settings > General > Sharing > Remote Management OFF"))
+
+    return findings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ENHANCED OSQUERY CHECKS (more queries if osquery is available)
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -2341,6 +2588,7 @@ def main():
         "quarantine": check_quarantine,
         "apps": check_app_security,
         "logs": check_system_logs,
+        "hardening": check_deep_hardening,
         "osquery_enhanced": check_osquery_enhanced,
     }
 
@@ -2366,7 +2614,7 @@ def main():
                     "updates", "lockscreen", "backups", "filesystem", "hardware",
                     "browser", "certificates", "sharing", "siri", "profiles",
                     "netinterfaces", "quarantine", "apps", "logs",
-                    "osquery", "osquery_enhanced", "clamav"]
+                    "hardening", "osquery", "osquery_enhanced", "clamav"]
     all_findings = []
     for name in module_order:
         all_findings.extend(results.get(name, []))
