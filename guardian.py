@@ -74,6 +74,7 @@ def detect_optional_tools():
         "osqueryi": ["/opt/homebrew/bin/osqueryi", "/usr/local/bin/osqueryi"],
         "clamscan": ["/opt/homebrew/bin/clamscan", "/usr/local/bin/clamscan"],
         "freshclam": ["/opt/homebrew/bin/freshclam", "/usr/local/bin/freshclam"],
+        "terminal-notifier": ["/opt/homebrew/bin/terminal-notifier", "/usr/local/bin/terminal-notifier"],
     }
     for name, paths in candidates.items():
         for p in paths:
@@ -125,8 +126,29 @@ def safe_run(bin_key, args=None, timeout=30):
 def notify(title, message):
     safe_title = title.replace('"', '').replace("\\", "")[:100]
     safe_msg = message.replace('"', '').replace("\\", "")[:200]
-    script = f'display notification "{safe_msg}" with title "{safe_title}"'
-    safe_run("osascript", ["-e", script], timeout=10)
+
+    # Primary: terminal-notifier (reliable from LaunchAgents)
+    if "terminal-notifier" in OPTIONAL_BINS:
+        out, err = safe_run("terminal-notifier", [
+            "-title", safe_title,
+            "-message", safe_msg,
+            "-sound", "Glass",
+            "-group", "guardian",
+        ], timeout=10)
+        if err:
+            log.warning(f"terminal-notifier failed: {err}")
+        else:
+            log.info(f"Notification sent: {safe_title}")
+            return
+
+    # Fallback: osascript (may not work from LaunchAgent)
+    script = (f'display notification "{safe_msg}" with title "{safe_title}" '
+              f'sound name "Glass"')
+    out, err = safe_run("osascript", ["-e", script], timeout=10)
+    if err:
+        log.warning(f"osascript notification failed: {err}")
+    else:
+        log.info(f"Notification sent (osascript): {safe_title}")
 
 # ── Severity & scoring ──────────────────────────────────────────────────────
 
