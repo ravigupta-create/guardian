@@ -1,11 +1,10 @@
 #!/bin/bash
 # Guardian — Uninstall script
-# Removes the LaunchAgent. Optionally removes runtime data.
+# Removes the LaunchAgents. Optionally removes runtime data.
 
 set -e
 
-PLIST_NAME="com.guardian.agent.plist"
-PLIST_DST="$HOME/Library/LaunchAgents/$PLIST_NAME"
+LAUNCH_DIR="$HOME/Library/LaunchAgents"
 GUARDIAN_DIR="$HOME/.guardian"
 
 echo "╔══════════════════════════════════════════╗"
@@ -13,21 +12,29 @@ echo "║   Guardian — Uninstalling...             ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
-# Unload agent
+# Unload scanner agent
 if launchctl list | grep -q "com.guardian.agent" 2>/dev/null; then
-    launchctl unload "$PLIST_DST" 2>/dev/null || true
-    echo "✓ Unloaded Guardian agent"
+    launchctl unload "$LAUNCH_DIR/com.guardian.agent.plist" 2>/dev/null || true
+    echo "✓ Unloaded scanner agent"
 else
-    echo "– Guardian agent was not loaded"
+    echo "– Scanner agent was not loaded"
 fi
 
-# Remove plist
-if [ -f "$PLIST_DST" ]; then
-    rm "$PLIST_DST"
-    echo "✓ Removed $PLIST_DST"
+# Unload dashboard agent
+if launchctl list | grep -q "com.guardian.dashboard" 2>/dev/null; then
+    launchctl unload "$LAUNCH_DIR/com.guardian.dashboard.plist" 2>/dev/null || true
+    echo "✓ Unloaded dashboard agent"
 else
-    echo "– Plist not found at $PLIST_DST"
+    echo "– Dashboard agent was not loaded"
 fi
+
+# Remove plists
+for plist in com.guardian.agent.plist com.guardian.dashboard.plist; do
+    if [ -f "$LAUNCH_DIR/$plist" ]; then
+        rm "$LAUNCH_DIR/$plist"
+        echo "✓ Removed $LAUNCH_DIR/$plist"
+    fi
+done
 
 echo ""
 

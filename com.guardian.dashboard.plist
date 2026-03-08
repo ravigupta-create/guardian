@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.guardian.dashboard</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/saavangupta/guardian/dashboard.py</string>
+    </array>
+
+    <!-- Start on login and keep running -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Auto-restart if it crashes -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Low priority -->
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <!-- Logs -->
+    <key>StandardOutPath</key>
+    <string>/Users/saavangupta/.guardian/dashboard-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/saavangupta/.guardian/dashboard-stderr.log</string>
+
+    <!-- Throttle restarts to avoid rapid restart loops -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>

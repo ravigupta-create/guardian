@@ -12,6 +12,7 @@ Opens at http://127.0.0.1:8845 — Ctrl+C to stop.
 import argparse
 import json
 import re
+import socket
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -1021,7 +1022,13 @@ def main():
     parser.add_argument("--port", type=int, default=8845, help="Port (default: 8845)")
     args = parser.parse_args()
 
-    server = HTTPServer(("127.0.0.1", args.port), DashboardHandler)
+    class ReuseHTTPServer(HTTPServer):
+        allow_reuse_address = True
+        def server_bind(self):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            super().server_bind()
+
+    server = ReuseHTTPServer(("127.0.0.1", args.port), DashboardHandler)
     print(f"\n  Guardian Dashboard running at http://127.0.0.1:{args.port}")
     print(f"  Press Ctrl+C to stop.\n")
     try:
